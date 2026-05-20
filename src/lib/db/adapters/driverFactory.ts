@@ -1,9 +1,12 @@
 // src/lib/db/adapters/driverFactory.ts
 import fs from "node:fs";
+import { createRequire } from "node:module";
+import { createBetterSqliteAdapter } from "./betterSqliteAdapter";
 import type { SqliteAdapter, PreparedStatement, RunResult } from "./types";
 
+const _require = createRequire(import.meta.url);
+
 declare global {
-   
   var __omnirouteSqlJsAdapters: Map<string, SqliteAdapter> | undefined;
 }
 
@@ -130,15 +133,10 @@ export function tryOpenSync(
   // better-sqlite3: rápido, nativo — skip em Bun
   if (!process.versions.bun) {
     try {
-       
-      const BetterSqlite = require("better-sqlite3") as {
+      const BetterSqlite = _require("better-sqlite3") as {
         new (p: string, o?: object): import("better-sqlite3").Database;
       };
       const db = new BetterSqlite(filePath, options);
-       
-      const { createBetterSqliteAdapter } = require("./betterSqliteAdapter") as {
-        createBetterSqliteAdapter: (db: import("better-sqlite3").Database) => SqliteAdapter;
-      };
       return createBetterSqliteAdapter(db);
     } catch {
       // continua para próximo driver
@@ -150,7 +148,7 @@ export function tryOpenSync(
     const [maj, min] = (process.versions.node ?? "0.0").split(".").map(Number);
     if (maj > 22 || (maj === 22 && min >= 5)) {
       try {
-        const { DatabaseSync } = require("node:sqlite") as {
+        const { DatabaseSync } = _require("node:sqlite") as {
           DatabaseSync: new (p: string) => Parameters<typeof buildNodeAdapterSync>[0];
         };
         const db = new DatabaseSync(filePath);
