@@ -2608,6 +2608,45 @@ export async function handleChatCore({
     content?: unknown;
   };
 
+  // Shared helper: lift any system/developer role messages out of the messages
+  // array into the top-level system parameter. Anthropic's Messages API rejects
+  // system/developer roles inside messages[]. Case-insensitive to be defensive.
+  const extractSystemMessagesToBody = (payload: Record<string, unknown>) => {
+    if (!Array.isArray(payload.messages)) return;
+    const messages = payload.messages as ClaudeMessage[];
+    const systemMessages = messages.filter((m) => {
+      const role = String(m.role || "").toLowerCase();
+      return role === "system" || role === "developer";
+    });
+    if (systemMessages.length === 0) return;
+    const extraBlocks: ClaudeContentBlock[] = [];
+    for (const sm of systemMessages) {
+      if (typeof sm.content === "string" && sm.content.length > 0) {
+        extraBlocks.push({ type: "text", text: sm.content });
+      } else if (Array.isArray(sm.content)) {
+        for (const block of sm.content as ClaudeContentBlock[]) {
+          if (block?.type === "text" && typeof block.text === "string" && block.text.length > 0) {
+            extraBlocks.push(block);
+          }
+        }
+      }
+    }
+    if (extraBlocks.length > 0) {
+      const existingSystem = payload.system;
+      if (typeof existingSystem === "string" && existingSystem.length > 0) {
+        payload.system = [{ type: "text", text: existingSystem }, ...extraBlocks];
+      } else if (Array.isArray(existingSystem)) {
+        payload.system = [...(existingSystem as ClaudeContentBlock[]), ...extraBlocks];
+      } else {
+        payload.system = extraBlocks;
+      }
+    }
+    payload.messages = messages.filter((m) => {
+      const role = String(m.role || "").toLowerCase();
+      return role !== "system" && role !== "developer";
+    });
+  };
+
   const normalizeClaudeUpstreamMessages = (
     payload: Record<string, unknown>,
     options?: { preserveToolResultBlocks?: boolean }
@@ -2616,34 +2655,9 @@ export async function handleChatCore({
     if (!Array.isArray(payload.messages)) return;
     let messages = payload.messages as ClaudeMessage[];
 
-    // Extract system role messages (Issue #1797)
-    const systemMessages = messages.filter((m) => m.role === "system");
-    if (systemMessages.length > 0) {
-      const extraBlocks: ClaudeContentBlock[] = [];
-      for (const sm of systemMessages) {
-        if (typeof sm.content === "string" && sm.content.length > 0) {
-          extraBlocks.push({ type: "text", text: sm.content });
-        } else if (Array.isArray(sm.content)) {
-          for (const block of sm.content as ClaudeContentBlock[]) {
-            if (block?.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-              extraBlocks.push(block);
-            }
-          }
-        }
-      }
-      if (extraBlocks.length > 0) {
-        const existingSystem = payload.system;
-        if (typeof existingSystem === "string" && existingSystem.length > 0) {
-          payload.system = [{ type: "text", text: existingSystem }, ...extraBlocks];
-        } else if (Array.isArray(existingSystem)) {
-          payload.system = [...(existingSystem as ClaudeContentBlock[]), ...extraBlocks];
-        } else {
-          payload.system = extraBlocks;
-        }
-      }
-      messages = messages.filter((m) => m.role !== "system");
-      payload.messages = messages;
-    }
+    // Extract system/developer role messages into top-level system parameter.
+    extractSystemMessagesToBody(payload);
+    messages = payload.messages as ClaudeMessage[];
 
     // Anthropic rejects empty text blocks in native Messages payloads.
     for (const msg of messages) {
@@ -2787,6 +2801,9 @@ export async function handleChatCore({
       if (!isClaudeCodeSemanticPassthrough) {
         normalizeClaudeUpstreamMessages(translatedBody, { preserveToolResultBlocks: true });
       } else {
+        // Semantic passthrough preserves messages as-is, but system/developer
+        // role messages must still be moved to the top-level system parameter.
+        extractSystemMessagesToBody(translatedBody);
         log?.debug?.("FORMAT", "claude-code semantic passthrough enabled");
       }
 
