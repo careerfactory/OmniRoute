@@ -90,6 +90,9 @@ async function tryKiroCliSqlite(): Promise<{
       // Read OIDC token (access + refresh token).
       // Try auth_kv table first (kiro-cli Linux/macOS schema), then fallback
       // key-value tables used by the Kiro IDE on Windows (VS Code-style storage).
+      // "kiro:auth:token" is the key Kiro IDE writes in its VS Code Extension Storage
+      // API-backed SQLite (ItemTable / storage tables) — confirmed from #3363 reporter's
+      // %APPDATA%\kiro\storage.db dump where the token starts with "aorAAAAAG".
       const tokenKeys = ["kirocli:odic:token", "kirocli:oidc:token", "kiro:auth:token"];
       let tokenData: any = null;
 
@@ -142,18 +145,25 @@ async function tryKiroCliSqlite(): Promise<{
         if (regData?.client_id) break;
       }
 
-      // Read profileArn from state table (enterprise SSO / IDC).
+      // Read profileArn (enterprise SSO / IDC). The kiro-cli Linux schema stores this
+      // in the `state` table; the Windows Kiro IDE schema may store it in `ItemTable`
+      // or `storage` with the same key. Probe all three so IDC users on Windows also
+      // get a valid profileArn and are not silently downgraded to the Builder ID path.
       let profileArn: string | undefined;
-      try {
-        const profileRow = db
-          .prepare("SELECT value FROM state WHERE key = 'api.codewhisperer.profile'")
-          .get() as { value: string } | undefined;
-        if (profileRow?.value) {
-          const profileData = JSON.parse(profileRow.value);
-          profileArn = profileData.arn || profileData.profileArn;
+      const profileKey = "api.codewhisperer.profile";
+      for (const table of ["state", "ItemTable", "storage"]) {
+        try {
+          const profileRow = db
+            .prepare(`SELECT value FROM ${table} WHERE key = ?`)
+            .get(profileKey) as { value: string } | undefined;
+          if (profileRow?.value) {
+            const profileData = JSON.parse(profileRow.value);
+            profileArn = profileData.arn || profileData.profileArn;
+            if (profileArn) break;
+          }
+        } catch {
+          // table may not exist — skip gracefully
         }
-      } catch {
-        // state table may not exist for personal Builder ID accounts
       }
 
       const region = tokenData.region || regData?.region || "us-east-1";
