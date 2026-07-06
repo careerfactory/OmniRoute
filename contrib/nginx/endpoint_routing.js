@@ -113,10 +113,12 @@ function handleRequest(r) {
     }
 
     var model = body.model;
-    if (model && typeof model === "string" && !shouldSkipModel(model)) {
+    if (model && typeof model === "string") {
         var bare = stripPrefix(model);
-        var prefix = prefixForEndpoint(r.uri);
-        r.variables.route_model = prefix + bare;
+        if (!shouldSkipModel(bare)) {
+            var prefix = prefixForEndpoint(r.uri);
+            r.variables.route_model = prefix + bare;
+        }
     }
 
     r.internalRedirect("/_omni_proxy" + r.uri);
