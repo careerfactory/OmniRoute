@@ -1,12 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { parseRerankModel, getAllRerankModels, getRerankProvider } = await import(
-  "../../open-sse/config/rerankRegistry.ts"
-);
-const { transformResponseFromProvider, transformRequestForProvider } = await import(
-  "../../open-sse/handlers/rerank.ts"
-);
+const { parseRerankModel, getAllRerankModels, getRerankProvider } =
+  await import("../../open-sse/config/rerankRegistry.ts");
+const { transformResponseFromProvider, transformRequestForProvider } =
+  await import("../../open-sse/handlers/rerank.ts");
 
 test("#5332 parseRerankModel resolves siliconflow multi-slash model id", () => {
   assert.deepEqual(parseRerankModel("siliconflow/Qwen/Qwen3-Reranker-8B"), {
@@ -68,4 +66,49 @@ test("#5332 deepinfra response omits document text when return_documents=false",
   );
   assert.equal(out.results[0].document, undefined);
   assert.equal(out.results[0].index, 1);
+});
+
+// #7350: Voyage AI rejects top_n with HTTP 400 — strip it in the request adapter.
+test("#7350 voyage-ai request adapter strips top_n (Voyage API rejects it)", () => {
+  const cfg = getRerankProvider("voyage-ai");
+  assert.equal(cfg.format, "voyage");
+  const out = transformRequestForProvider(cfg, {
+    model: "rerank-2.5",
+    query: "q",
+    documents: ["a", "b"],
+    top_n: 1,
+    return_documents: false,
+  });
+  assert.equal("top_n" in out, false, "top_n must be stripped for voyage-ai");
+  assert.equal(out.model, "rerank-2.5");
+  assert.equal(out.query, "q");
+  assert.deepEqual(out.documents, ["a", "b"]);
+  assert.equal(out.return_documents, false);
+});
+
+test("#7350 voyage-ai request adapter preserves body when top_n is absent", () => {
+  const cfg = getRerankProvider("voyage-ai");
+  const out = transformRequestForProvider(cfg, {
+    model: "rerank-2.5-lite",
+    query: "q",
+    documents: ["a"],
+    return_documents: true,
+  });
+  assert.deepEqual(out, {
+    model: "rerank-2.5-lite",
+    query: "q",
+    documents: ["a"],
+    return_documents: true,
+  });
+});
+
+test("#7350 voyage-ai is registered with format=voyage", () => {
+  const cfg = getRerankProvider("voyage-ai");
+  assert.equal(cfg.format, "voyage");
+  assert.equal(cfg.baseUrl, "https://api.voyageai.com/v1/rerank");
+});
+
+test("#7350 voyage alias resolves to voyage-ai with format=voyage", () => {
+  const cfg = getRerankProvider("voyage");
+  assert.equal(cfg?.format, "voyage");
 });
