@@ -1,5 +1,6 @@
 # ── Common base with runtime deps ──────────────────────────────────────────
-FROM node:24-trixie-slim AS base
+ARG OMNIROUTE_NODE_IMAGE=node:24-trixie-slim
+FROM ${OMNIROUTE_NODE_IMAGE} AS base
 WORKDIR /app
 
 # `apt-get upgrade` pulls the security-patched versions of the Debian (trixie)
@@ -15,13 +16,14 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=shared \
   && apt-get install -y --no-install-recommends libsecret-1-0 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Refresh the globally-installed npm so its *bundled* node_modules (undici, tar)
-# ship the patched versions. These are npm's own internals — not application
+# Pin the globally-installed npm used to build the runtime. Its *bundled* node_modules (undici, tar)
+# are npm's own internals — not application
 # dependencies (our app already resolves undici@8.5.0 / tar@7.5.16, both fixed) —
 # but the container scanner flags the stale copies under
 # /usr/local/lib/node_modules/npm/node_modules. npm is not invoked at runtime in
 # the runner stages, so this is hygiene, not an exploitable runtime path.
-RUN npm install -g npm@latest \
+ARG OMNIROUTE_NPM_VERSION=11.18.0
+RUN npm install -g "npm@${OMNIROUTE_NPM_VERSION}" \
   && npm cache clean --force
 
 # ── Builder ────────────────────────────────────────────────────────────────
@@ -57,7 +59,8 @@ RUN test -f package-lock.json \
   || (echo "package-lock.json is required for reproducible Docker builds" >&2 && exit 1)
 RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
   npm ci --no-audit --no-fund --legacy-peer-deps --ignore-scripts \
-  && npm rebuild better-sqlite3 \
+  && node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild \
+    --directory=/app/node_modules/better-sqlite3 --nodedir=/usr/local \
   && node -e "require('better-sqlite3')(':memory:').close()"
 
 # Build with Turbopack (stable in Next 16, the repo default). The v3.8.27-era

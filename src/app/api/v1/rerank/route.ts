@@ -7,7 +7,8 @@ import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { v1RerankSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
-import { getProviderNodes } from "@/lib/localDb";
+import { getProviderNodes, resolveProxyForConnection } from "@/lib/localDb";
+import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import {
   isAllRateLimitedCredentials,
   rateLimitedProviderResponse,
@@ -110,14 +111,21 @@ async function postHandler(request, context) {
       return rateLimitedProviderResponse(provider, credentials);
     }
 
-    const response = await handleRerank({
-      model: body.model,
-      query: body.query,
-      documents: body.documents,
-      top_n: body.top_n,
-      return_documents: body.return_documents,
-      credentials,
-    });
+    const rerank = () =>
+      handleRerank({
+        model: body.model,
+        query: body.query,
+        documents: body.documents,
+        top_n: body.top_n,
+        return_documents: body.return_documents,
+        credentials,
+      });
+    const proxy = credentials.connectionId
+      ? await resolveProxyForConnection(credentials.connectionId)
+      : null;
+    const response = await (credentials.connectionId
+      ? runWithProxyContext(proxy?.proxy || null, rerank)
+      : rerank());
     if (response?.ok) {
       await clearRecoveredProviderState(credentials);
     }

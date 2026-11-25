@@ -160,7 +160,8 @@ export function detectTestKind(modelStr: string, customModel: any) {
       lowerModel.includes("bge-") ||
       lowerModel.includes("text-embed") ||
       lowerModel.includes("jina-clip") ||
-      lowerModel.includes("colbert"));
+      lowerModel.includes("colbert") ||
+      lowerModel.includes("voyage-"));
   return { isRerank, isEmbedding };
 }
 
@@ -253,7 +254,8 @@ export async function runSingleModelTest(
   const runInner = async (signal: AbortSignal): Promise<Response> => {
     if (isEmbedding) {
       return handleValidatedEmbeddingRequestBody(
-        testBody as Record<string, unknown> & { model: string }
+        testBody as Record<string, unknown> & { model: string },
+        { connectionId: connectionId || undefined }
       );
     }
     if (isRerank) {

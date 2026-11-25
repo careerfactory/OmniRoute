@@ -163,7 +163,16 @@ export async function handleRerank({
         "Content-Type": "application/json",
         ...buildAuthHeader(providerConfig, token),
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(
+        providerId === "voyage-ai"
+          ? {
+              model: requestBody.model,
+              query: requestBody.query,
+              documents: requestBody.documents,
+              return_documents: requestBody.return_documents,
+            }
+          : requestBody
+      ),
     });
 
     if (!res.ok) {

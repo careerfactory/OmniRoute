@@ -20,9 +20,14 @@ import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { v1ImageGenerationSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 
-import { getAllCustomModels, resolveProxyForConnection } from "@/lib/localDb";
+import { getAllCustomModels, getProviderNodes, resolveProxyForConnection } from "@/lib/localDb";
 import { resolveImageRouteModel } from "@/lib/images/imageRouteModel";
-import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
+import {
+  getOriginalFetch,
+  resolveProxyForRequest,
+  runWithProxyContext,
+} from "@omniroute/open-sse/utils/proxyFetch.ts";
+import openRouterImage from "@/lib/images/smartaipackOpenRouterImages.cjs";
 import { attachOmniRouteMetaHeaders } from "@/domain/omnirouteResponseMeta";
 import { calculateModalCost } from "@/lib/usage/costCalculator";
 import { generateRequestId } from "@/shared/utils/requestId";
@@ -129,6 +134,36 @@ async function postHandler(request, context) {
   } catch {
     log.warn("IMAGE", "Invalid JSON body");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
+  }
+
+  if (request.headers.get("x-smartaipack-images") === "1") {
+    const policy = await enforceApiKeyPolicy(request);
+    if (policy.rejection) return policy.rejection;
+    if (!policy.apiKeyInfo) {
+      return Response.json({ error: { code: "unauthorized" } }, { status: 401 });
+    }
+
+    const providers = (await getProviderNodes()).filter((node) => node.prefix === "or");
+    const connection =
+      providers.length === 1 ? await getProviderCredentials(providers[0].id) : null;
+    if (!connection) {
+      return Response.json({ error: { code: "openrouter_images_unavailable" } }, { status: 503 });
+    }
+    if (connection.allRateLimited) {
+      return Response.json({ error: { code: "openrouter_images_rate_limited" } }, { status: 429 });
+    }
+
+    const proxy = connection.connectionId
+      ? await resolveProxyForConnection(connection.connectionId)
+      : null;
+    const forward = () => {
+      const target = "https://openrouter.ai/api/v1/images";
+      const fetchOnce = resolveProxyForRequest(target).proxyUrl ? fetch : getOriginalFetch();
+      return openRouterImage.forwardOpenRouterImage(rawBody, connection, request.signal, fetchOnce);
+    };
+    return connection.connectionId
+      ? await runWithProxyContext(proxy?.proxy || null, forward)
+      : await forward();
   }
 
   const validation = validateBody(v1ImageGenerationSchema, rawBody);
