@@ -351,3 +351,51 @@ test("rate limit manager recomputes auto-enabled API key connections when queue 
   assert.equal(rateLimitManager.isRateLimitEnabled(explicitConnection.id), true);
   assert.ok(rateLimitManager.getAllRateLimitStatus()[`openai:${autoConnection.id}`]);
 });
+
+test("loads saved connection limits before starting an automatically enabled limiter", async () => {
+  const connection = await providersDb.createProviderConnection({
+    provider: "openai", authType: "apikey", name: "Saved OpenAI", apiKey: "fixture-key",
+    isActive: true, rateLimitOverrides: { maxConcurrent: 32, minTime: 1, rpm: 37 },
+  });
+  await rateLimitManager.initializeRateLimits();
+  assert.equal(rateLimitManager.isRateLimitEnabled(connection.id), true);
+  const state = await rateLimitManager.__getLimiterStateForTests("openai", connection.id);
+  assert.equal(state?.reservoir, 37);
+});
+
+test("refreshing global queue settings preserves the connection burst and the balance of its RPM bucket", async () => {
+  const connection = await providersDb.createProviderConnection({
+    provider: "openai", authType: "apikey", name: "Override OpenAI", apiKey: "fixture-key",
+    isActive: true, rateLimitProtection: true, rateLimitOverrides: { maxConcurrent: 32, minTime: 1, rpm: 37 },
+  });
+  await rateLimitManager.initializeRateLimits();
+  const schedule = (fn: () => Promise<void>) => rateLimitManager.withRateLimit("openai", connection.id, null, fn);
+  await schedule(async () => {});
+  await rateLimitManager.applyRequestQueueSettings({
+    ...resilienceSettings.DEFAULT_RESILIENCE_SETTINGS.requestQueue,
+    concurrentRequests: 2,
+    minTimeBetweenRequestsMs: 250,
+    requestsPerMinute: 90,
+  });
+  assert.equal((await rateLimitManager.__getLimiterStateForTests("openai", connection.id))?.reservoir, 36);
+
+  const allActive = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let active = 0;
+  let peak = 0;
+  const jobs = Array.from({ length: 20 }, () => schedule(async () => {
+    peak = Math.max(peak, ++active);
+    if (peak === 20) allActive.resolve();
+    await release.promise;
+    active -= 1;
+  }));
+  try {
+    const reached = await Promise.race([allActive.promise.then(() => true), wait(1000).then(() => false)]);
+    assert.equal(reached, true);
+    assert.equal(peak, 20);
+    assert.equal((await rateLimitManager.__getLimiterStateForTests("openai", connection.id))?.reservoir, 16);
+  } finally {
+    release.resolve();
+    await Promise.all(jobs);
+  }
+});

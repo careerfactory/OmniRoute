@@ -76,6 +76,7 @@ function errorRateLimit(...args: unknown[]): void {
 
 // Store limiters keyed by "provider:connectionId" (and optionally ":model")
 const limiters = new Map<string, Bottleneck>();
+const limiterConnections = new WeakMap<Bottleneck, string>();
 
 // Store connections that have rate limit protection enabled
 const enabledConnections = new Set<string>();
@@ -162,11 +163,31 @@ function buildLimiterDefaults() {
   };
 }
 
-function updateAllLimiterSettings() {
+function getConnectionLimitOverrides(connectionId: string | undefined) {
+  const overrides = connectionId ? connectionRateLimitOverrides.get(connectionId) : undefined;
+  const positive = (value: unknown) => typeof value === "number" && value > 0 ? value : undefined;
+  return {
+    maxConcurrent: positive(overrides?.maxConcurrent),
+    minTime: positive(overrides?.minTime),
+    rpm: positive(overrides?.rpm),
+  };
+}
+
+async function updateAllLimiterSettings(preserveConnectionBuckets: boolean) {
   const defaults = buildLimiterDefaults();
-  for (const limiter of limiters.values()) {
-    limiter.updateSettings(defaults);
-  }
+  await Promise.all([...limiters.values()].map(limiter => {
+    const overrides = getConnectionLimitOverrides(limiterConnections.get(limiter));
+    const pacing = {
+      maxConcurrent: overrides.maxConcurrent ?? defaults.maxConcurrent,
+      minTime: overrides.minTime ?? defaults.minTime,
+    };
+    // An unrelated global update must not refill a connection's own bucket.
+    return limiter.updateSettings(overrides.rpm && preserveConnectionBuckets ? pacing : {
+      ...defaults, ...pacing,
+      reservoir: overrides.rpm ?? defaults.reservoir,
+      reservoirRefreshAmount: overrides.rpm ?? defaults.reservoirRefreshAmount,
+    });
+  }));
 }
 
 function reconcileEnabledConnections(
@@ -344,13 +365,7 @@ export async function initializeRateLimits() {
     const [connections, settings] = await Promise.all([getProviderConnections(), getSettings()]);
     const resilience = resolveResilienceSettings(settings);
     currentRequestQueueSettings = { ...resilience.requestQueue };
-    const { explicitCount, autoCount } = reconcileEnabledConnections(
-      connections as unknown[],
-      currentRequestQueueSettings
-    );
-    updateAllLimiterSettings();
-
-    // Load per-connection rate limit overrides
+    // Reconciliation may create limiters for auto-enabled connections.
     connectionRateLimitOverrides.clear();
     for (const conn of connections as Array<Record<string, unknown>>) {
       const overrides = conn.rateLimitOverrides;
@@ -358,6 +373,12 @@ export async function initializeRateLimits() {
         connectionRateLimitOverrides.set(String(conn.id), overrides as Record<string, number>);
       }
     }
+
+    const { explicitCount, autoCount } = reconcileEnabledConnections(
+      connections as unknown[],
+      currentRequestQueueSettings
+    );
+    await updateAllLimiterSettings(false);
 
     if (explicitCount > 0 || autoCount > 0) {
       logRateLimit(
@@ -381,7 +402,7 @@ export async function applyRequestQueueSettings(nextSettings: RequestQueueSettin
   const { getProviderConnections } = await import("@/lib/localDb");
   const connections = await getProviderConnections();
   reconcileEnabledConnections(connections as unknown[], currentRequestQueueSettings);
-  updateAllLimiterSettings();
+  await updateAllLimiterSettings(true);
 }
 
 /**
@@ -468,32 +489,17 @@ function getLimiter(provider, connectionId, model = null) {
 
   if (!limiters.has(key)) {
     const defaults = buildLimiterDefaults();
-    const overrides = connectionRateLimitOverrides.get(connectionId);
-    if (overrides) {
-      // 0 (or missing) means "no override — fall through to buildLimiterDefaults()".
-      // Without this guard, an rpm of 0 sets reservoir=0, which Bottleneck treats
-      // as "depleted" and blocks ALL requests indefinitely. Treating 0 as "use
-      // default" lets users effectively disable per-connection limits without
-      // globally raising the system default.
-      if (typeof overrides.maxConcurrent === "number" && overrides.maxConcurrent > 0) {
-        defaults.maxConcurrent = overrides.maxConcurrent;
-      }
-      if (typeof overrides.minTime === "number" && overrides.minTime > 0) {
-        defaults.minTime = overrides.minTime;
-      }
-      if (typeof overrides.rpm === "number" && overrides.rpm > 0) {
-        defaults.reservoir = overrides.rpm;
-        defaults.reservoirRefreshAmount = overrides.rpm;
-        defaults.reservoirRefreshInterval = 60 * 1000;
-      }
-      // TODO: TPM/TPD integration — requires a token-bucket vs request-bucket
-      // separation (Bottleneck's reservoir is request-count, not token-count).
-      // When added, treat 0/missing the same way: fall through to system default.
-    }
+    const overrides = getConnectionLimitOverrides(connectionId);
+    // Zero or missing overrides inherit the global setting.
     const limiter = new Bottleneck({
       ...defaults,
+      maxConcurrent: overrides.maxConcurrent ?? defaults.maxConcurrent,
+      minTime: overrides.minTime ?? defaults.minTime,
+      reservoir: overrides.rpm ?? defaults.reservoir,
+      reservoirRefreshAmount: overrides.rpm ?? defaults.reservoirRefreshAmount,
       id: key,
     });
+    limiterConnections.set(limiter, connectionId);
     // Heartbeat: timestamp every dispatch so the watchdog can tell a healthy
     // queue (just dispatched a job) from a wedged one (queue has work but
     // nothing has been dispatched in a while).
