@@ -262,6 +262,7 @@ import {
 } from "./responseSanitizer.ts";
 import {
   withRateLimit,
+  ProviderWindowLimitError,
   updateFromHeaders,
   updateFromResponseBody,
   initializeRateLimits,
@@ -2857,7 +2858,8 @@ export async function handleChatCore({
     }
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
-    if (isSemaphoreCapacityError(error)) {
+    const providerWindowLimited = error instanceof ProviderWindowLimitError;
+    if (providerWindowLimited || isSemaphoreCapacityError(error)) {
       appendRequestLog({
         model,
         provider,
@@ -2879,7 +2881,7 @@ export async function handleChatCore({
         : createErrorResult(HTTP_STATUS.RATE_LIMITED, failureMessage);
       return {
         ...result,
-        errorType: "account_semaphore_capacity",
+        errorType: providerWindowLimited ? "provider_window_capacity" : "account_semaphore_capacity",
         errorCode: error.code,
       };
     }

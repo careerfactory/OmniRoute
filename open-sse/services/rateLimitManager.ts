@@ -77,6 +77,37 @@ function errorRateLimit(...args: unknown[]): void {
 // Store limiters keyed by "provider:connectionId" (and optionally ":model")
 const limiters = new Map<string, Bottleneck>();
 const limiterConnections = new WeakMap<Bottleneck, string>();
+// Explicit connection RPM and upstream quota are independent.
+const providerWindows = new WeakMap<Bottleneck, { remaining: number; resetAt: number }>();
+
+export class ProviderWindowLimitError extends Error {
+  readonly status = 429;
+  readonly code = "LOCAL_PROVIDER_WINDOW_EXHAUSTED";
+  constructor() {
+    super("OmniRoute is waiting for the provider quota window to reset");
+  }
+}
+
+function limitProviderWindow(limiter: Bottleneck, remaining: number, resetMs: number) {
+  const now = Date.now();
+  const current = providerWindows.get(limiter);
+  const active = current && current.resetAt > now;
+  providerWindows.set(limiter, {
+    remaining: Math.max(0, active ? Math.min(current.remaining, remaining) : remaining),
+    resetAt: Math.max(now + resetMs, active ? current.resetAt : 0),
+  });
+}
+
+function checkProviderWindow(limiter: Bottleneck, consume: boolean) {
+  const window = providerWindows.get(limiter);
+  if (!window) return;
+  if (window.resetAt <= Date.now()) {
+    providerWindows.delete(limiter);
+    return;
+  }
+  if (window.remaining === 0) throw new ProviderWindowLimitError();
+  if (consume) window.remaining -= 1;
+}
 
 // Store connections that have rate limit protection enabled
 const enabledConnections = new Set<string>();
@@ -553,6 +584,13 @@ export async function withRateLimit(provider, connectionId, model, fn, signal = 
   if (signal?.aborted) throw getAbortError(signal);
 
   const limiter = getLimiter(provider, connectionId, model);
+  checkProviderWindow(limiter, false);
+  const dispatch = () => {
+    // Aborting the race does not remove an individual Bottleneck job.
+    if (signal?.aborted) throw getAbortError(signal);
+    checkProviderWindow(limiter, true);
+    return fn();
+  };
   const maxWaitMs = currentRequestQueueSettings.maxWaitMs;
   const scheduleOpts = maxWaitMs && maxWaitMs > 0 ? { expiration: maxWaitMs } : {};
 
@@ -566,11 +604,7 @@ export async function withRateLimit(provider, connectionId, model, fn, signal = 
       });
 
       try {
-        const scheduled = limiter.schedule(scheduleOpts, async () => {
-          // Aborting the race does not remove an individual Bottleneck job.
-          if (signal.aborted) throw getAbortError(signal);
-          return fn();
-        });
+        const scheduled = limiter.schedule(scheduleOpts, async () => dispatch());
         return await Promise.race([scheduled, abortPromise]);
       } finally {
         if (abortListener) {
@@ -578,7 +612,7 @@ export async function withRateLimit(provider, connectionId, model, fn, signal = 
         }
       }
     } else {
-      return await limiter.schedule(scheduleOpts, fn);
+      return await limiter.schedule(scheduleOpts, async () => dispatch());
     }
   } catch (err) {
     // Bottleneck's raw `This job timed out after <maxWaitMs> ms.` is
@@ -636,9 +670,15 @@ export function updateFromHeaders(provider, connectionId, headers, status, model
   const retryAfterStr = getHeader(headerMap.retryAfter);
   const overLimit = getHeader(STANDARD_HEADERS.overLimit);
 
+  const overrides = getConnectionLimitOverrides(connectionId);
+
   // Handle 429 — rate limited
   if (status === 429) {
     const retryAfterMs = parseResetTime(retryAfterStr) || 60000; // Default 60s
+    if (overrides.rpm) {
+      limitProviderWindow(limiter, 0, retryAfterMs);
+      return;
+    }
     const counts = limiter.counts();
     const limiterKey = getLimiterKey(provider, connectionId, model);
     logRateLimit(
@@ -685,16 +725,19 @@ export function updateFromHeaders(provider, connectionId, headers, status, model
     // If remaining is low (< 10% of limit), set reservoir to throttle immediately
     if (!isNaN(remaining)) {
       if (remaining < limit * 0.1) {
-        updates.reservoir = remaining;
-        updates.reservoirRefreshAmount = limit;
-        updates.reservoirRefreshInterval = resetMs;
+        if (overrides.rpm) {
+          limitProviderWindow(limiter, remaining, resetMs);
+        } else {
+          updates.reservoir = remaining;
+          updates.reservoirRefreshAmount = limit;
+          updates.reservoirRefreshInterval = resetMs;
+        }
         logRateLimit(
           `⚠️ [RATE-LIMIT] ${provider}:${connectionId.slice(0, 8)} — ${remaining}/${limit} remaining, throttling`
         );
       } else if (remaining > limit * 0.5) {
         // Spare provider capacity clears automatic throttling. Explicit
         // connection limits still govern traffic to this account.
-        const overrides = getConnectionLimitOverrides(connectionId);
         updates.minTime = overrides.minTime ?? 0;
         if (!overrides.rpm) {
           updates.reservoir = null;
@@ -942,10 +985,14 @@ export function updateFromResponseBody(provider, connectionId, responseBody, sta
       `🚫 [RATE-LIMIT] ${provider}:${connectionId.slice(0, 8)} — body-parsed retry: ${Math.ceil(retryAfterMs / 1000)}s (${reason})`
     );
 
-    limiter.updateSettings({
-      reservoir: 0,
-      reservoirRefreshAmount: 60,
-      reservoirRefreshInterval: retryAfterMs,
-    });
+    if (getConnectionLimitOverrides(connectionId).rpm) {
+      limitProviderWindow(limiter, 0, retryAfterMs);
+    } else {
+      limiter.updateSettings({
+        reservoir: 0,
+        reservoirRefreshAmount: 60,
+        reservoirRefreshInterval: retryAfterMs,
+      });
+    }
   }
 }

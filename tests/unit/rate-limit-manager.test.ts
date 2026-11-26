@@ -419,3 +419,67 @@ test("a provider response with spare capacity does not remove the configured RPM
   await Promise.all(Array.from({ length: 20 }, run));
   assert.equal((await rateLimitManager.__getLimiterStateForTests("openai", connection))?.reservoir, 20);
 });
+
+test("scarce provider quota cannot increase or replace the configured RPM bucket", async () => {
+  const connection = "conn-separate-provider-budget";
+  rateLimitManager.enableRateLimitProtection(connection);
+  rateLimitManager.refreshConnectionRateLimits(connection, { maxConcurrent: 32, minTime: 1, rpm: 60 });
+  const run = (fn: () => Promise<void> = async () => {}) =>
+    rateLimitManager.withRateLimit("openai", connection, null, fn);
+  const remaining = async () => (await rateLimitManager.__getLimiterStateForTests("openai", connection))?.reservoir;
+  await Promise.all(Array.from({ length: 20 }, () => run()));
+  rateLimitManager.updateFromHeaders("openai", connection, {
+    "x-ratelimit-limit-requests": "1000", "x-ratelimit-remaining-requests": "80",
+    "x-ratelimit-reset-requests": "30s",
+  }, 200);
+  assert.equal(await remaining(), 40);
+  rateLimitManager.updateFromHeaders("openai", connection, {
+    "x-ratelimit-limit-requests": "1000", "x-ratelimit-remaining-requests": "2",
+    "x-ratelimit-reset-requests": "30s",
+  }, 200);
+  await run();
+  await run();
+  rateLimitManager.updateFromHeaders("openai", connection, {
+    "x-ratelimit-limit-requests": "1000", "x-ratelimit-remaining-requests": "850",
+  }, 200);
+  await assert.rejects(run(async () => assert.fail("provider window has no slots")), {
+    status: 429, code: "LOCAL_PROVIDER_WINDOW_EXHAUSTED",
+  });
+  assert.equal(await remaining(), 38);
+});
+
+test("Retry-After blocks new and queued dispatches without refilling the configured RPM", async () => {
+  const connection = "conn-independent-provider-cooldown";
+  rateLimitManager.enableRateLimitProtection(connection);
+  rateLimitManager.refreshConnectionRateLimits(connection, { maxConcurrent: 1, minTime: 1, rpm: 60 });
+  const run = (fn: () => Promise<void> = async () => {}) =>
+    rateLimitManager.withRateLimit("openai", connection, null, fn);
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const first = run(async () => {
+    started.resolve();
+    await release.promise;
+  });
+  await started.promise;
+  const queued = run(async () => assert.fail("queued request must not reach the provider"));
+  const rejected = assert.rejects(queued, { code: "LOCAL_PROVIDER_WINDOW_EXHAUSTED" });
+  const deadline = Date.now() + 1000;
+  while (!rateLimitManager.getRateLimitStatus("openai", connection).queued && Date.now() < deadline) {
+    await wait(5);
+  }
+  try {
+    assert.equal(rateLimitManager.getRateLimitStatus("openai", connection).queued, 1);
+    rateLimitManager.updateFromHeaders("openai", connection, { "retry-after": "500ms" }, 429);
+    assert.equal((await rateLimitManager.__getLimiterStateForTests("openai", connection))?.reservoir, 59);
+    await assert.rejects(run(async () => assert.fail("new request must not reach the provider")), {
+      status: 429, code: "LOCAL_PROVIDER_WINDOW_EXHAUSTED",
+    });
+  } finally {
+    release.resolve();
+    await first;
+    await rejected;
+  }
+  await wait(520);
+  await run();
+  assert.ok((await rateLimitManager.__getLimiterStateForTests("openai", connection))!.reservoir! < 59);
+});

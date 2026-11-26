@@ -1461,7 +1461,7 @@ async function handleSingleModelChat(
         return withSelectedConnectionHeader(result.response, credentials?.connectionId);
       }
 
-      if (result.errorType === "account_semaphore_capacity") {
+      if (result.errorType === "account_semaphore_capacity" || result.errorType === "provider_window_capacity") {
         // Local concurrency pressure is not an upstream quota failure. Prefer another
         // account when possible; pinned combo steps fall through to combo orchestration.
         if (hasForcedConnection) {
@@ -1470,7 +1470,7 @@ async function handleSingleModelChat(
 
         log.warn(
           "AUTH",
-          `Account ${accountId}... at local concurrency cap, trying fallback account`
+          `Account ${accountId}... at its capacity limit, trying fallback account`
         );
         excludedConnectionIds.add(credentials.connectionId);
         lastError = result.error;
