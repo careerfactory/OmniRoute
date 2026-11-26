@@ -51,6 +51,7 @@ export async function handleEmbedding({
   apiKeyName = null,
   connectionId = null,
   dispatchTrace,
+  signal,
 }: {
   body: Record<string, unknown>;
   credentials: { apiKey?: string | null; accessToken?: string | null } | null;
@@ -62,6 +63,7 @@ export async function handleEmbedding({
   apiKeyName?: string | null;
   connectionId?: string | null;
   dispatchTrace?: ProviderDispatchTrace;
+  signal?: AbortSignal;
 }) {
   // Use pre-resolved provider/model from route handler if available (supports dynamic provider_nodes).
   let provider: string | null;
@@ -225,6 +227,10 @@ export async function handleEmbedding({
       } catch {
         // fail-open per B16
       }
+    }
+
+    if (signal?.aborted) {
+      return { success: false, status: 499, error: "Client cancelled before provider dispatch" };
     }
 
     // Log provider request

@@ -36,6 +36,7 @@ export interface EmbeddingHandlerOptions {
   connectionId?: string | null;
   correlationId?: string;
   dispatchTrace?: ProviderDispatchTrace;
+  signal?: AbortSignal;
 }
 
 export async function createEmbeddingResponse(
@@ -256,6 +257,7 @@ export async function createEmbeddingResponse(
       apiKeyName: options.apiKeyName || null,
       connectionId: options.connectionId || null,
       dispatchTrace: options.dispatchTrace,
+      signal: options.signal,
     });
 
   const result = connectionIdForProxy

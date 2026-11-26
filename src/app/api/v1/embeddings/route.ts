@@ -127,6 +127,7 @@ async function postHandler(request, context) {
     connectionId: null,
     correlationId,
     dispatchTrace,
+    signal: request.signal,
   });
   const responseHeaders = new Headers(response.headers);
   responseHeaders.set("X-Correlation-Id", correlationId);
