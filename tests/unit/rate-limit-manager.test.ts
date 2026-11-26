@@ -59,6 +59,73 @@ test("rate limit manager bypasses disabled connections and exposes inactive stat
   assert.deepEqual(rateLimitManager.getAllRateLimitStatus(), {});
 });
 
+test("rate limit manager never dispatches a request cancelled in the queue", async () => {
+  await rateLimitManager.applyRequestQueueSettings({
+    ...resilienceSettings.DEFAULT_RESILIENCE_SETTINGS.requestQueue,
+    concurrentRequests: 1,
+    minTimeBetweenRequestsMs: 0,
+    maxWaitMs: 5000,
+  });
+  const connection = "conn-cancel-queued";
+  rateLimitManager.enableRateLimitProtection(connection);
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const schedule = (fn: () => Promise<unknown>, signal?: AbortSignal) =>
+    rateLimitManager.withRateLimit("openai", connection, null, fn, signal);
+  const active = schedule(async () => {
+    started.resolve();
+    await release.promise;
+  });
+  let dispatches = 0;
+  try {
+    await started.promise;
+    const controller = new AbortController();
+    const cancelled = schedule(async () => { dispatches += 1; }, controller.signal);
+    const rejection = assert.rejects(cancelled, { name: "AbortError" });
+    const deadline = performance.now() + 1000;
+    while (rateLimitManager.getRateLimitStatus("openai", connection).queued === 0 &&
+        performance.now() < deadline) {
+      await wait(5);
+    }
+    const queued = rateLimitManager.getRateLimitStatus("openai", connection).queued;
+    controller.abort(Object.assign(new Error("fixture cancelled"), { name: "AbortError" }));
+    await rejection;
+    assert.equal(queued, 1);
+  } finally {
+    release.resolve();
+    await active;
+  }
+  assert.equal(await schedule(async () => "recovered"), "recovered");
+  assert.equal(dispatches, 0);
+});
+
+test("the disabled limiter also honors a pre-aborted signal", async () => {
+  await assert.rejects(rateLimitManager.withRateLimit(
+    "openai", "disabled-conn", null, async () => assert.fail("unexpected dispatch"),
+    AbortSignal.abort()
+  ), { name: "AbortError" });
+});
+
+test("the limiter preserves the native abort reason while a request is scheduled", async () => {
+  const connection = "conn-native-cancel";
+  rateLimitManager.enableRateLimitProtection(connection);
+  const controller = new AbortController();
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const request = rateLimitManager.withRateLimit("openai", connection, null, async () => {
+    started.resolve();
+    await release.promise;
+  }, controller.signal);
+  const rejected = assert.rejects(request, { name: "AbortError" });
+  await started.promise;
+  try {
+    controller.abort();
+    await rejected;
+  } finally {
+    release.resolve();
+  }
+});
+
 test("rate limit manager handles soft over-limit warnings and normal header learning", async () => {
   rateLimitManager.enableRateLimitProtection("conn-over-limit");
   rateLimitManager.updateFromHeaders(

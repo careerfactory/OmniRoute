@@ -510,6 +510,14 @@ function getLimiter(provider, connectionId, model = null) {
   return limiters.get(key);
 }
 
+function getAbortError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) return reason;
+  const error = new Error(typeof reason === "string" ? reason : "The operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 /**
  * Acquire a rate limit slot before making a request.
  * If rate limiting is disabled for this connection, returns immediately.
@@ -522,16 +530,10 @@ function getLimiter(provider, connectionId, model = null) {
  * @returns {Promise<unknown>} Result of fn()
  */
 export async function withRateLimit(provider, connectionId, model, fn, signal = null) {
+  if (signal?.aborted) throw getAbortError(signal);
+
   if (!enabledConnections.has(connectionId)) {
     return fn();
-  }
-
-  if (signal?.aborted) {
-    const reason = signal.reason;
-    if (reason instanceof Error) throw reason;
-    const err = new Error(typeof reason === "string" ? reason : "The operation was aborted");
-    err.name = "AbortError";
-    throw err;
   }
 
   // Proactive sliding-window fallback for header-less providers with a declared cap
@@ -542,6 +544,7 @@ export async function withRateLimit(provider, connectionId, model, fn, signal = 
     signal,
     currentRequestQueueSettings.maxWaitMs
   );
+  if (signal?.aborted) throw getAbortError(signal);
 
   const limiter = getLimiter(provider, connectionId, model);
   const maxWaitMs = currentRequestQueueSettings.maxWaitMs;
@@ -551,25 +554,18 @@ export async function withRateLimit(provider, connectionId, model, fn, signal = 
     if (signal) {
       let abortListener: (() => void) | undefined;
       const abortPromise = new Promise<never>((_, reject) => {
-        const onAbort = () => {
-          const reason = signal.reason;
-          const err =
-            reason instanceof Error
-              ? reason
-              : new Error(typeof reason === "string" ? reason : "The operation was aborted");
-          err.name = "AbortError";
-          reject(err);
-        };
-        if (signal.aborted) {
-          onAbort();
-          return;
-        }
+        const onAbort = () => reject(getAbortError(signal));
         abortListener = onAbort;
         signal.addEventListener("abort", abortListener, { once: true });
       });
 
       try {
-        return await Promise.race([limiter.schedule(scheduleOpts, fn), abortPromise]);
+        const scheduled = limiter.schedule(scheduleOpts, async () => {
+          // Aborting the race does not remove an individual Bottleneck job.
+          if (signal.aborted) throw getAbortError(signal);
+          return fn();
+        });
+        return await Promise.race([scheduled, abortPromise]);
       } finally {
         if (abortListener) {
           signal.removeEventListener("abort", abortListener);
