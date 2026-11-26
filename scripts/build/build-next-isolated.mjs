@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { patchBottleneckHeartbeat } from "./patchBottleneckHeartbeat.mjs";
 import {
   assembleStandalone,
   syncStandaloneNativeAssets as _syncNativeAssets,
@@ -191,6 +192,7 @@ export async function syncStandaloneExtraModules(
 }
 
 export async function main() {
+  patchBottleneckHeartbeat();
   const movedPaths = [];
   const transientBuildPaths = getTransientBuildPaths();
 

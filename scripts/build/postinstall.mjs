@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import { PUBLISHED_BUILD_ARCH, PUBLISHED_BUILD_PLATFORM } from "./native-binary-compat.mjs";
 import { hasStandaloneAppBundle, isTermux } from "./postinstallSupport.mjs";
 import { colocateLlmlinguaOptionals } from "./colocateOptionals.mjs";
+import { patchBottleneckHeartbeat } from "./patchBottleneckHeartbeat.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -342,6 +343,7 @@ async function ensureLlmlinguaOptionals() {
   }
 }
 
+patchBottleneckHeartbeat();
 await fixBetterSqliteBinary();
 await fixWreqJsBinary();
 await ensureSwcHelpers();
