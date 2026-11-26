@@ -574,9 +574,11 @@ export function pipeWithDisconnect(
 ) {
   const stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_STREAM_STALL_TIMEOUT_MS;
 
-  // Watchdog disabled — preserve legacy behavior verbatim.
+  // The same upstream cancellation applies with the watchdog disabled.
   if (!stallTimeoutMs || stallTimeoutMs <= 0) {
-    const transformedBody = providerResponse.body.pipeThrough(transformStream);
+    const transformedBody = providerResponse.body.pipeThrough(transformStream, {
+      signal: streamController.signal,
+    });
     return createDisconnectAwareStream(
       { readable: transformedBody, writable: createNoopAbortWritable() },
       streamController
@@ -671,7 +673,7 @@ export function pipeWithDisconnect(
   });
 
   const transformedBody = providerResponse.body
-    .pipeThrough(upstreamTap)
+    .pipeThrough(upstreamTap, { signal: streamController.signal })
     .pipeThrough(transformStream);
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: createNoopAbortWritable() },

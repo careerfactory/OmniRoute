@@ -11,7 +11,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import tls from "node:tls";
 import { fetch } from "undici";
-import { clearDispatcherCache, createProxyDispatcher } from "../../open-sse/utils/proxyDispatcher.ts";
+import { clearDispatcherCache, createProxyDispatcher, requiresCancellableSseTransport } from "../../open-sse/utils/proxyDispatcher.ts";
 import {
   createProviderDispatchTrace,
   runWithProviderDispatchTrace,
@@ -121,4 +121,21 @@ test("twenty staggered POSTs through HTTP CONNECT reach the HTTP/2 upstream conc
   }
   assert.equal(events.length, 80);
   console.log(JSON.stringify({ sent: 20, valid: 20, peak: 20, lastArrivalMs: Math.round(last - started), tunnels }));
+});
+
+test("the cancellable transport is selected only for streaming requests to a configured origin", async () => {
+  const prior = process.env.OMNIROUTE_CANCELLABLE_SSE_ORIGINS;
+  process.env.OMNIROUTE_CANCELLABLE_SSE_ORIGINS = "https://a.example, https://b.example";
+  try {
+    const signal = new AbortController().signal;
+    const body = JSON.stringify({ stream: true });
+    assert.equal(requiresCancellableSseTransport("https://b.example/v1/chat/completions", { body, signal }), true);
+    assert.equal(requiresCancellableSseTransport("https://b.example:8443/v1/chat/completions", { body, signal }), false);
+    assert.equal(requiresCancellableSseTransport("https://other.example/v1/chat/completions", { body, signal }), false);
+    assert.equal(requiresCancellableSseTransport("https://b.example/v1/chat/completions", { body }), false);
+    assert.equal(requiresCancellableSseTransport("https://b.example/v1/chat/completions", { body: '{"stream":false}', signal }), false);
+  } finally {
+    if (prior === undefined) delete process.env.OMNIROUTE_CANCELLABLE_SSE_ORIGINS;
+    else process.env.OMNIROUTE_CANCELLABLE_SSE_ORIGINS = prior;
+  }
 });

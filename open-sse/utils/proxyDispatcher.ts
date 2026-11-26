@@ -232,6 +232,19 @@ function buildProxyUrlString(parsed: URL, port: string): string {
   return `${parsed.protocol}//${auth}${parsed.hostname}:${port}`;
 }
 
+export function requiresCancellableSseTransport(url: string, options: RequestInit): boolean {
+  const origins = process.env.OMNIROUTE_CANCELLABLE_SSE_ORIGINS;
+  if (!origins || !options.signal || typeof options.body !== "string") return false;
+
+  try {
+    const origin = new URL(url).origin;
+    return origins.split(",").some((entry) => entry.trim() === origin)
+      && JSON.parse(options.body)?.stream === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * SOCKS5 proxy support defaults ON (opt-OUT). A fresh deploy with no env set
  * should honour SOCKS5 proxies out of the box — they were silently rejected

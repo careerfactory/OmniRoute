@@ -11,6 +11,7 @@ import {
   normalizeProxyUrl,
   proxyConfigToUrl,
   proxyUrlForLogs,
+  requiresCancellableSseTransport,
 } from "./proxyDispatcher.ts";
 import tlsClient from "./tlsClient.ts";
 import { isProxyReachable } from "@/lib/proxyHealth";
@@ -437,7 +438,10 @@ async function patchedFetch(
 
   if (!proxyUrl) {
     // TLS fingerprint spoofing for direct connections (no proxy configured)
-    if (isTlsFingerprintEnabled() && tlsClient.available) {
+    // wreq-js removes the native abort listener at headers and may keep the socket
+    // open after body.cancel(). Use Undici for SSE on explicitly configured origins.
+    if (isTlsFingerprintEnabled() && tlsClient.available
+        && !requiresCancellableSseTransport(targetUrl, options)) {
       try {
         const store = tlsFingerprintContext.getStore();
         if (store) store.used = true;

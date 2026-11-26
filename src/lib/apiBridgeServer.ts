@@ -36,7 +36,7 @@ function getProxyTimeoutMs(req: IncomingMessage): number {
   return Math.max(API_BRIDGE_TIMEOUTS.proxyTimeoutMs, API_BRIDGE_TIMEOUTS.serverRequestTimeoutMs);
 }
 
-function proxyRequest(req: IncomingMessage, res: ServerResponse, dashboardPort: number): void {
+export function proxyRequest(req: IncomingMessage, res: ServerResponse, dashboardPort: number): void {
   const proxyTimeoutMs = getProxyTimeoutMs(req);
   const targetReq = http.request(
     {
@@ -51,6 +51,11 @@ function proxyRequest(req: IncomingMessage, res: ServerResponse, dashboardPort: 
       timeout: proxyTimeoutMs,
     },
     (targetRes) => {
+      if (res.destroyed) {
+        targetRes.destroy();
+        return;
+      }
+      targetRes.once("error", () => res.destroy());
       const contentType = String(targetRes.headers["content-type"] || "").toLowerCase();
       if (contentType.includes("text/event-stream")) {
         targetReq.setTimeout(0);
@@ -74,7 +79,11 @@ function proxyRequest(req: IncomingMessage, res: ServerResponse, dashboardPort: 
   });
 
   targetReq.on("error", (error) => {
-    if (res.headersSent) return;
+    if (res.destroyed) return;
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
     res.writeHead(502, { "content-type": "application/json" });
     res.end(
       JSON.stringify({
@@ -84,8 +93,12 @@ function proxyRequest(req: IncomingMessage, res: ServerResponse, dashboardPort: 
     );
   });
 
-  req.on("aborted", () => {
+  req.once("aborted", () => {
     targetReq.destroy();
+  });
+  res.once("close", () => {
+    // The request body may already be fully uploaded while an SSE response is open.
+    if (!res.writableFinished) targetReq.destroy();
   });
 
   req.pipe(targetReq);
