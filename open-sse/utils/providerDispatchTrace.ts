@@ -54,8 +54,10 @@ export function createProviderDispatchTrace(
   write: (event: DispatchEvent) => void = (event) =>
     console.info(`[PROVIDER_DISPATCH] ${JSON.stringify(event)}`)
 ): ProviderDispatchTrace | undefined {
-  if (!keyId || keyId !== process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID ||
-      !correlationId || !/^[a-zA-Z0-9._:-]{1,128}$/.test(correlationId)) return;
+  const diagnosticKeys = process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID?.split(",").map(id => id.trim());
+  const validId = /^[a-zA-Z0-9._:-]{1,128}$/;
+  if (!keyId || !diagnosticKeys || diagnosticKeys.length > 5 || !diagnosticKeys.every(id => validId.test(id))
+      || !diagnosticKeys.includes(keyId) || !correlationId || !validId.test(correlationId)) return;
   let sequence = 0;
   const emit: ProviderDispatchTrace["emit"] = (phase, attempt, status) => {
     const monotonicMs = performance.now();
