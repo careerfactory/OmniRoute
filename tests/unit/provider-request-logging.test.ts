@@ -195,3 +195,26 @@ test("the scoped transport trace counts 20 actual sends and keeps them open unti
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test("diagnostic dispatch tracing supports bounded explicit key selection", () => {
+  const original = process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID;
+  const keys = ["fixture-a", "fixture-b", "fixture-c", "fixture-d", "fixture-e"];
+  const trace = (key: string) => createProviderDispatchTrace(key, "fixture-correlation");
+  try {
+    process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID = keys.join(", ");
+    for (const key of keys) assert.ok(trace(key));
+    assert.equal(trace("fixture-other"), undefined);
+
+    process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID = keys[0];
+    assert.ok(trace(keys[0]));
+    assert.equal(trace(keys[1]), undefined);
+
+    process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID = [...keys, "fixture-f"].join(",");
+    assert.equal(trace(keys[0]), undefined);
+    process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID = "fixture-a,,fixture-b";
+    assert.equal(trace(keys[0]), undefined);
+  } finally {
+    if (original === undefined) delete process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID;
+    else process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID = original;
+  }
+});
