@@ -12,15 +12,15 @@ export type DispatchEvent = {
   status?: number;
 };
 
-type Trace = {
+export type ProviderDispatchTrace = {
   phase: (phase: "queue_enter" | "queue_exit") => void;
   nextAttempt: () => number;
   emit: (phase: Phase, attempt: number | null, status?: number) => void;
 };
 
 type DiagnosticMessage = { request: object; response?: { statusCode?: number } };
-const tracing = new AsyncLocalStorage<Trace>();
-const attempts = new WeakMap<object, { trace: Trace; number: number }>();
+const tracing = new AsyncLocalStorage<ProviderDispatchTrace>();
+const attempts = new WeakMap<object, { trace: ProviderDispatchTrace; number: number }>();
 let subscribed = false;
 
 function traceAttempt(message: unknown, phase: Phase, terminal = false) {
@@ -53,11 +53,11 @@ export function createProviderDispatchTrace(
   correlationId: string | null | undefined,
   write: (event: DispatchEvent) => void = (event) =>
     console.info(`[PROVIDER_DISPATCH] ${JSON.stringify(event)}`)
-): Trace | undefined {
+): ProviderDispatchTrace | undefined {
   if (!keyId || keyId !== process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID ||
       !correlationId || !/^[a-zA-Z0-9._:-]{1,128}$/.test(correlationId)) return;
   let sequence = 0;
-  const emit: Trace["emit"] = (phase, attempt, status) => {
+  const emit: ProviderDispatchTrace["emit"] = (phase, attempt, status) => {
     const monotonicMs = performance.now();
     try {
       write({ correlationId, attempt, phase, monotonicMs,
@@ -69,7 +69,7 @@ export function createProviderDispatchTrace(
   return { emit, nextAttempt: () => ++sequence, phase: (phase) => emit(phase, null) };
 }
 
-export function runWithProviderDispatchTrace<T>(trace: Trace, fetchProvider: () => T): T {
+export function runWithProviderDispatchTrace<T>(trace: ProviderDispatchTrace, fetchProvider: () => T): T {
   subscribeToUndici();
   return tracing.run(trace, fetchProvider);
 }

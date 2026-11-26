@@ -13,6 +13,7 @@ import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
 import { getProviderCredentials, clearRecoveredProviderState } from "@/sse/services/auth";
 import { getProviderNodes, getComboByName, getCombos, getDatabaseSettings } from "@/lib/localDb";
 import { resolveProxyForConnection } from "@/lib/db/settings";
+import type { ProviderDispatchTrace } from "@omniroute/open-sse/utils/providerDispatchTrace.ts";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import { handleComboChat } from "@omniroute/open-sse/services/combo.ts";
 import { resolveBareModelToConnectionDefault } from "@omniroute/open-sse/services/model.ts";
@@ -33,6 +34,8 @@ export interface EmbeddingHandlerOptions {
   apiKeyId?: string | null;
   apiKeyName?: string | null;
   connectionId?: string | null;
+  correlationId?: string;
+  dispatchTrace?: ProviderDispatchTrace;
 }
 
 export async function createEmbeddingResponse(
@@ -252,6 +255,7 @@ export async function createEmbeddingResponse(
       apiKeyId: options.apiKeyId || null,
       apiKeyName: options.apiKeyName || null,
       connectionId: options.connectionId || null,
+      dispatchTrace: options.dispatchTrace,
     });
 
   const result = connectionIdForProxy
@@ -271,7 +275,7 @@ export async function createEmbeddingResponse(
       usage,
       costUsd,
       latencyMs: Date.now() - startTime,
-      requestId: generateRequestId(),
+      requestId: options.correlationId ?? generateRequestId(),
     });
     return new Response(JSON.stringify(result.data), {
       status: result.status,

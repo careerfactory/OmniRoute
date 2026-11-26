@@ -20,6 +20,7 @@ import {
   type EmbeddingProvider,
 } from "../config/embeddingRegistry.ts";
 import { saveCallLog } from "@/lib/usageDb";
+import { runWithProviderDispatchTrace, type ProviderDispatchTrace } from "../utils/providerDispatchTrace.ts";
 import { createRequestLogger } from "../utils/requestLogger.ts";
 import { isDetailedLoggingEnabled } from "@/lib/db/detailedLogs";
 import { getCallLogPipelineCaptureStreamChunks } from "@/lib/logEnv";
@@ -49,6 +50,7 @@ export async function handleEmbedding({
   apiKeyId = null,
   apiKeyName = null,
   connectionId = null,
+  dispatchTrace,
 }: {
   body: Record<string, unknown>;
   credentials: { apiKey?: string | null; accessToken?: string | null } | null;
@@ -59,6 +61,7 @@ export async function handleEmbedding({
   apiKeyId?: string | null;
   apiKeyName?: string | null;
   connectionId?: string | null;
+  dispatchTrace?: ProviderDispatchTrace;
 }) {
   // Use pre-resolved provider/model from route handler if available (supports dynamic provider_nodes).
   let provider: string | null;
@@ -227,11 +230,13 @@ export async function handleEmbedding({
     // Log provider request
     reqLogger.logTargetRequest(providerConfig.baseUrl, headers, upstreamBody);
 
-    const response = await fetch(providerConfig.baseUrl, {
+    const url = providerConfig.baseUrl;
+    const send = () => fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(upstreamBody),
     });
+    const response = await (dispatchTrace ? runWithProviderDispatchTrace(dispatchTrace, send) : send());
 
     if (!response.ok) {
       const errorText = await response.text();

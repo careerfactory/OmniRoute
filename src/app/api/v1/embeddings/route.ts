@@ -3,6 +3,7 @@ import {
   getAllEmbeddingModels,
 } from "@omniroute/open-sse/config/embeddingRegistry.ts";
 import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
+import { createProviderDispatchTrace } from "@omniroute/open-sse/utils/providerDispatchTrace.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
@@ -13,6 +14,7 @@ import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { getAllCustomModels, getApiKeyMetadata } from "@/lib/localDb";
 import { createEmbeddingResponse, type EmbeddingHandlerOptions } from "@/lib/embeddings/service";
 import { extractApiKey, isValidApiKey } from "@/sse/services/auth";
+import { generateRequestId } from "@/shared/utils/requestId";
 import { withInjectionGuard } from "@/middleware/promptInjectionGuard";
 
 function toProviderScopedModelId(providerId: string, modelId: string): string {
@@ -114,11 +116,24 @@ async function postHandler(request, context) {
     headers: Object.fromEntries(request.headers.entries()),
   };
 
-  return handleValidatedEmbeddingRequestBody(body as ValidatedEmbeddingBody, {
+  const correlationId = generateRequestId();
+  const dispatchTrace = policy.apiKeyInfo?.noLog
+    ? undefined
+    : createProviderDispatchTrace(apiKeyMeta?.id, correlationId);
+  const response = await handleValidatedEmbeddingRequestBody(body as ValidatedEmbeddingBody, {
     clientRawRequest,
     apiKeyId: apiKeyMeta?.id || null,
     apiKeyName: apiKeyMeta?.name || null,
     connectionId: null,
+    correlationId,
+    dispatchTrace,
+  });
+  const responseHeaders = new Headers(response.headers);
+  responseHeaders.set("X-Correlation-Id", correlationId);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders,
   });
 }
 
