@@ -455,13 +455,20 @@ export function createProxyDispatcher(proxyUrl: string): Dispatcher {
     // `{ family, autoSelectFamily }` pin. At runtime undici merges these options into
     // net.connect (the uri already carries the host:port), so the partial pin is
     // valid; the cast suppresses the spurious missing-`port` error.
-    dispatcher = new ProxyAgent({
+    const agentOptions = {
       uri: cleanUri,
       ...proxyDispatcherOptions,
+      connections: 1,
       ...(family !== null
         ? { proxyTls: { family, autoSelectFamily: false } as ProxyAgent.Options["proxyTls"] }
         : {}),
-    });
+    };
+    // A warm HTTP/2 session can accept requests into its queue before the pool
+    // notices that their bodies cannot run concurrently. Separate the lanes
+    // before dispatch so a burst cannot accumulate behind one session.
+    dispatcher = createRoundRobinDispatcher(
+      Array.from({ length: proxyDispatcherOptions.connections }, () => new ProxyAgent(agentOptions))
+    );
   }
 
   dispatcherCache.set(normalizedUrl, dispatcher);

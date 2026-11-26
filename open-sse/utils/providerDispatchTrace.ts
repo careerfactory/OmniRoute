@@ -18,7 +18,7 @@ export type ProviderDispatchTrace = {
   emit: (phase: Phase, attempt: number | null, status?: number) => void;
 };
 
-type DiagnosticMessage = { request: object; response?: { statusCode?: number } };
+type DiagnosticMessage = { request: { method?: string }; response?: { statusCode?: number } };
 const tracing = new AsyncLocalStorage<ProviderDispatchTrace>();
 const attempts = new WeakMap<object, { trace: ProviderDispatchTrace; number: number }>();
 let subscribed = false;
@@ -38,6 +38,9 @@ function subscribeToUndici() {
     const trace = tracing.getStore();
     if (!trace) return;
     const { request } = message as DiagnosticMessage;
+    // Undici emits request diagnostics for both the model POST and the proxy
+    // handshake. CONNECT opens the tunnel and is not an inference attempt.
+    if (request.method === "CONNECT") return;
     const number = trace.nextAttempt();
     attempts.set(request, { trace, number });
     trace.emit("created", number);
