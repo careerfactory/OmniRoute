@@ -27,6 +27,10 @@ import {
   resolveProxyForRequest,
   runWithProxyContext,
 } from "@omniroute/open-sse/utils/proxyFetch.ts";
+import {
+  createProviderDispatchTrace,
+  runWithProviderDispatchTrace,
+} from "@omniroute/open-sse/utils/providerDispatchTrace.ts";
 import openRouterImage from "@/lib/images/smartaipackOpenRouterImages.cjs";
 import { attachOmniRouteMetaHeaders } from "@/domain/omnirouteResponseMeta";
 import { calculateModalCost } from "@/lib/usage/costCalculator";
@@ -156,10 +160,15 @@ async function postHandler(request, context) {
     const proxy = connection.connectionId
       ? await resolveProxyForConnection(connection.connectionId)
       : null;
+    const trace = policy.apiKeyInfo.noLog
+      ? undefined
+      : createProviderDispatchTrace(policy.apiKeyInfo.id, request.headers.get("x-correlation-id"));
     const forward = () => {
       const target = "https://openrouter.ai/api/v1/images";
       const fetchOnce = resolveProxyForRequest(target).proxyUrl ? fetch : getOriginalFetch();
-      return openRouterImage.forwardOpenRouterImage(rawBody, connection, request.signal, fetchOnce);
+      const send = () =>
+        openRouterImage.forwardOpenRouterImage(rawBody, connection, request.signal, fetchOnce);
+      return trace ? runWithProviderDispatchTrace(trace, send) : send();
     };
     return connection.connectionId
       ? await runWithProxyContext(proxy?.proxy || null, forward)
