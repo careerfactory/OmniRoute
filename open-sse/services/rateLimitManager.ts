@@ -692,11 +692,15 @@ export function updateFromHeaders(provider, connectionId, headers, status, model
           `⚠️ [RATE-LIMIT] ${provider}:${connectionId.slice(0, 8)} — ${remaining}/${limit} remaining, throttling`
         );
       } else if (remaining > limit * 0.5) {
-        // Plenty of headroom — relax the limiter
-        updates.minTime = 0;
-        updates.reservoir = null;
-        updates.reservoirRefreshAmount = null;
-        updates.reservoirRefreshInterval = null;
+        // Spare provider capacity clears automatic throttling. Explicit
+        // connection limits still govern traffic to this account.
+        const overrides = getConnectionLimitOverrides(connectionId);
+        updates.minTime = overrides.minTime ?? 0;
+        if (!overrides.rpm) {
+          updates.reservoir = null;
+          updates.reservoirRefreshAmount = null;
+          updates.reservoirRefreshInterval = null;
+        }
       }
     }
 

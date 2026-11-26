@@ -399,3 +399,23 @@ test("refreshing global queue settings preserves the connection burst and the ba
     await Promise.all(jobs);
   }
 });
+
+test("a provider response with spare capacity does not remove the configured RPM bucket", async () => {
+  const connection = "conn-stable-rpm";
+  rateLimitManager.enableRateLimitProtection(connection);
+  rateLimitManager.refreshConnectionRateLimits(connection, { maxConcurrent: 32, minTime: 1, rpm: 60 });
+  const run = () => rateLimitManager.withRateLimit("openai", connection, null, async () => {});
+  await Promise.all(Array.from({ length: 20 }, run));
+  assert.equal((await rateLimitManager.__getLimiterStateForTests("openai", connection))?.reservoir, 40);
+
+  rateLimitManager.updateFromHeaders("openai", connection, {
+    "x-ratelimit-limit-requests": "1000",
+    "x-ratelimit-remaining-requests": "853",
+    "x-ratelimit-reset-requests": "40s",
+  }, 200);
+  const learned = rateLimitManager.getLearnedLimits()[`openai:${connection}`];
+  assert.equal((await rateLimitManager.__getLimiterStateForTests("openai", connection))?.reservoir, 40);
+  assert.equal(learned?.minTime, 1);
+  await Promise.all(Array.from({ length: 20 }, run));
+  assert.equal((await rateLimitManager.__getLimiterStateForTests("openai", connection))?.reservoir, 20);
+});
