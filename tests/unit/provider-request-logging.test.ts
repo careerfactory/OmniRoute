@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { createProviderDispatchTrace, type DispatchEvent } from "../../open-sse/utils/providerDispatchTrace.ts";
 
 import {
   runWithCapture,
@@ -136,5 +139,59 @@ test("runWithCapture does not duplicate an already prepared identical fetch", as
     assert.equal(prepared.length, 1);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("the scoped transport trace counts 20 actual sends and keeps them open until response completion", async () => {
+  let arrived = 0;
+  const replies: (() => void)[] = [];
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      arrived++;
+      if (arrived > 20) {
+        res.end("{}\n");
+        return;
+      }
+      replies.push(() => res.end("{}\n"));
+      if (arrived === 20) replies.forEach((reply) => reply());
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const url = `http://127.0.0.1:${address.port}/inference`;
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID;
+  process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID = "fixture-key";
+  const events: DispatchEvent[] = [];
+  const trace = (id: string, key = "fixture-key") => createProviderDispatchTrace(key, id, (event) => events.push(event));
+  const send = (dispatchTrace: Capture["dispatchTrace"], signal = AbortSignal.timeout(5000)) =>
+    runWithCapture({ dispatchTrace, capture() {}, body: (fallback) => fallback }, async () => {
+      const response = await fetch(url, { method: "POST", body: '{"model":"fixture"}', signal });
+      await response.text();
+    });
+  try {
+    await Promise.all(Array.from({ length: 20 }, (_, i) => send(trace(`request-${i}`))));
+    const sent = events.filter((e) => e.phase === "body_sent");
+    const completed = events.filter((e) => e.phase === "completed");
+    assert.equal(new Set(sent.map((e) => e.correlationId)).size, 20);
+    assert.equal(completed.length, 20);
+    assert.ok(Math.max(...sent.map((e) => e.monotonicMs)) < Math.min(...completed.map((e) => e.monotonicMs)));
+    const repeat = trace("repeated");
+    await send(repeat);
+    await send(repeat);
+    await send(trace("unscoped", "other"));
+    await assert.rejects(send(trace("cancelled"), AbortSignal.abort()));
+    assert.deepEqual(events.filter((e) => e.correlationId === "repeated" && e.phase === "body_sent").map((e) => e.attempt), [1, 2]);
+    assert.equal(events.some((e) => e.correlationId === "unscoped" || e.correlationId === "cancelled"), false);
+    assert.equal(arrived, 23);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID;
+    else process.env.OMNIROUTE_PROVIDER_TRACE_KEY_ID = originalKey;
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

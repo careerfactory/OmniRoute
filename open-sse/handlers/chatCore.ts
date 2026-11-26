@@ -96,6 +96,7 @@ import {
 } from "../services/tokenRefresh.ts";
 import { createRequestLogger } from "../utils/requestLogger.ts";
 import { createPreparedRequestLogger, runWithCapture } from "../utils/providerRequestLogging.ts";
+import { createProviderDispatchTrace } from "../utils/providerDispatchTrace.ts";
 import { summarizeToolSources } from "../utils/toolSources.ts";
 import { applyResponsesPreviousResponseIdPolicy } from "../utils/responsesStatePolicy.ts";
 import { applyClaudeEffortVariant } from "./chatCore/claudeEffortVariant.ts";
@@ -918,6 +919,10 @@ export async function handleChatCore({
   });
   const pendingScope = { id: pendingRequestId, model, provider, connectionId: pendingConnId };
   const providerRequestCapture = createPreparedRequestLogger(reqLogger, pendingScope);
+  const providerDispatchTrace = noLogEnabled
+    ? undefined
+    : createProviderDispatchTrace(apiKeyInfo?.id, correlationId);
+  providerRequestCapture.dispatchTrace = providerDispatchTrace;
   // 0. Log client raw request (before format conversion)
   if (clientRawRequest) {
     reqLogger.logClientRawRequest(
@@ -2293,6 +2298,7 @@ export async function handleChatCore({
                 stage: "waiting_account_slot",
               });
             }
+            providerDispatchTrace?.phase("queue_enter");
             const releaseAccountSemaphore =
               accountSemaphoreKey && accountSemaphoreMaxConcurrency != null
                 ? await acquireAccountSemaphore(accountSemaphoreKey, {
@@ -2313,6 +2319,7 @@ export async function handleChatCore({
                 modelToCall,
                 async () => {
                   trace("inside_rate_limit", { connectionId: attemptConnectionId });
+                  providerDispatchTrace?.phase("queue_exit");
                   updatePendingScope(pendingScope, {
                     stage: "rate_limit_slot_acquired",
                   });

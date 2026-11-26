@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { updatePendingScope, type PendingRequestScope } from "@/lib/usage/pendingRequestScope";
+import { createProviderDispatchTrace, runWithProviderDispatchTrace } from "./providerDispatchTrace.ts";
 
 export type ProviderRequestPrepared = {
   url: string;
@@ -13,6 +14,7 @@ export type Capture = {
   capture: (request: ProviderRequestPrepared) => Promise<void> | void;
   body: (fallback: unknown) => unknown;
   latest?: () => ProviderRequestPrepared | null;
+  dispatchTrace?: ReturnType<typeof createProviderDispatchTrace>;
 };
 
 type RequestLoggerLike = {
@@ -138,8 +140,11 @@ function installFetchCapture() {
   captureState.wrappedInnerFetch = globalThis.fetch.bind(globalThis);
   captureState.wrappedFetch = (async (input: FetchInput, init?: FetchInit) => {
     const activeCapture = captureState.context.getStore();
-    if (activeCapture) {
-      await captureFetchRequest(activeCapture, input, init);
+    const providerRequest = activeCapture && (await captureFetchRequest(activeCapture, input, init));
+    if (providerRequest && activeCapture?.dispatchTrace) {
+      return runWithProviderDispatchTrace(activeCapture.dispatchTrace, () =>
+        captureState.wrappedInnerFetch!(input, init)
+      );
     }
     return captureState.wrappedInnerFetch!(input, init);
   }) as typeof fetch;
@@ -163,6 +168,7 @@ async function captureFetchRequest(requestCapture: Capture, input: FetchInput, i
     body,
     bodyString
   );
+  return true;
 }
 
 function getFetchMethod(input: FetchInput, init?: FetchInit) {
