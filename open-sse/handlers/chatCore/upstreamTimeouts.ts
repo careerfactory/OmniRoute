@@ -116,23 +116,13 @@ export async function executeWithUpstreamStartTimeout<T>({
   if (signal.aborted) throw createAbortError(signal);
 
   const timeoutController = new AbortController();
-  const combinedController = new AbortController();
+  // Fetch continues reading the SSE body after it resolves with headers.
+  // Keep client cancellation connected for that lifetime, even after clearing the timer.
+  const upstreamSignal = AbortSignal.any([signal, timeoutController.signal]);
   const timeoutError = createUpstreamStartTimeoutError(timeoutMs, provider, model);
 
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let abortListener: (() => void) | null = null;
-  let timeoutAbortListener: (() => void) | null = null;
-
-  const abortCombined = (source: AbortSignal) => {
-    if (combinedController.signal.aborted) return;
-    const reason = source.reason instanceof Error ? source.reason : createAbortError(source);
-    combinedController.abort(reason);
-  };
-
-  abortListener = () => abortCombined(signal);
-  timeoutAbortListener = () => abortCombined(timeoutController.signal);
-  signal.addEventListener("abort", abortListener, { once: true });
-  timeoutController.signal.addEventListener("abort", timeoutAbortListener, { once: true });
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
@@ -143,16 +133,14 @@ export async function executeWithUpstreamStartTimeout<T>({
   });
 
   const abortPromise = new Promise<never>((_, reject) => {
-    signal.addEventListener("abort", () => reject(createAbortError(signal)), { once: true });
+    abortListener = () => reject(createAbortError(signal));
+    signal.addEventListener("abort", abortListener, { once: true });
   });
 
   try {
-    return await Promise.race([execute(combinedController.signal), timeoutPromise, abortPromise]);
+    return await Promise.race([execute(upstreamSignal), timeoutPromise, abortPromise]);
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
     if (abortListener) signal.removeEventListener("abort", abortListener);
-    if (timeoutAbortListener) {
-      timeoutController.signal.removeEventListener("abort", timeoutAbortListener);
-    }
   }
 }
